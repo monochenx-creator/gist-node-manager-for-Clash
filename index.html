@@ -450,6 +450,28 @@
             </div>
           </section>
 
+          <section class="panel editor stack">
+            <h2>添加网址规则</h2>
+            <textarea id="ruleInput" placeholder="一行一个网址或域名，例如：&#10;example.com&#10;https://chat.example.com/path"></textarea>
+            <div class="field">
+              <label for="ruleTarget">加入到策略组</label>
+              <select id="ruleTarget"></select>
+            </div>
+            <div class="field">
+              <label for="ruleType">规则类型</label>
+              <select id="ruleType">
+                <option value="DOMAIN-SUFFIX">域名后缀</option>
+                <option value="DOMAIN">完整域名</option>
+                <option value="DOMAIN-KEYWORD">域名关键词</option>
+              </select>
+            </div>
+            <div class="row">
+              <button id="addRules" class="primary"><i data-lucide="list-plus"></i>加入规则</button>
+              <button id="clearRules"><i data-lucide="eraser"></i>清空</button>
+            </div>
+            <p class="muted">输入完整网址时会自动提取域名。规则会插入到最后的 MATCH 规则前面。</p>
+          </section>
+
           <section class="panel latency stack">
             <div class="row" style="justify-content: space-between;">
               <h2>延迟检测</h2>
@@ -594,7 +616,7 @@
 
     function render() {
       const proxies = state.config?.proxies || [];
-      $('summary').textContent = `${proxies.length} 个节点，${state.config?.['proxy-groups']?.length || 0} 个策略组`;
+      $('summary').textContent = `${proxies.length} 个节点，${state.config?.['proxy-groups']?.length || 0} 个策略组，${state.config?.rules?.length || 0} 条规则`;
       const grid = $('nodeGrid');
       grid.innerHTML = '';
       proxies.forEach((proxy) => {
@@ -628,8 +650,19 @@
           renameProxy(oldName, input?.value || '');
         });
       });
+      renderRuleTargets();
       renderLatencyRows();
       if (window.lucide) window.lucide.createIcons();
+    }
+
+    function renderRuleTargets() {
+      const select = $('ruleTarget');
+      const current = select.value;
+      const groups = (state.config?.['proxy-groups'] || []).map((group) => group.name).filter(Boolean);
+      const targets = [...new Set([...groups, 'DIRECT', 'REJECT'])];
+      select.innerHTML = targets.map((name) => `<option value="${escapeHtml(name)}">${escapeHtml(name)}</option>`).join('');
+      if (targets.includes(current)) select.value = current;
+      select.disabled = !targets.length;
     }
 
     function renderLatencyRows() {
@@ -755,6 +788,63 @@
       } catch (error) {
         setStatus(error.message, 'bad');
       }
+    }
+
+    function normalizeRuleValue(value, type) {
+      let text = String(value || '').trim();
+      if (!text) return '';
+      if (type === 'DOMAIN-KEYWORD') {
+        return text.replace(/^https?:\/\//, '').split(/[/?#]/)[0].replace(/^\*\./, '').replace(/^\./, '').trim();
+      }
+      try {
+        const withProtocol = /^[a-z][a-z0-9+.-]*:\/\//i.test(text) ? text : `https://${text}`;
+        text = new URL(withProtocol).hostname;
+      } catch {
+        text = text.split(/[/?#]/)[0];
+      }
+      return text.replace(/:\d+$/, '').replace(/^\*\./, '').replace(/^\./, '').trim().toLowerCase();
+    }
+
+    function addRules() {
+      if (!state.config) {
+        setStatus('先读取或粘贴配置。', 'warn');
+        return;
+      }
+      const target = $('ruleTarget').value;
+      const type = $('ruleType').value;
+      const lines = $('ruleInput').value.split(/\n+/).map((line) => line.trim()).filter(Boolean);
+      if (!target) {
+        setStatus('先选择要加入的策略组。', 'warn');
+        return;
+      }
+      if (!lines.length) {
+        setStatus('没有要加入的网址。', 'warn');
+        return;
+      }
+      state.config.rules = Array.isArray(state.config.rules) ? state.config.rules : [];
+      const existing = new Set(state.config.rules.map((rule) => String(rule).trim()));
+      const newRules = [];
+      lines.forEach((line) => {
+        const value = normalizeRuleValue(line, type);
+        if (!value) return;
+        const rule = `${type},${value},${target}`;
+        if (!existing.has(rule)) {
+          existing.add(rule);
+          newRules.push(rule);
+        }
+      });
+      if (!newRules.length) {
+        setStatus('没有新增规则，可能都已经存在。', 'warn');
+        return;
+      }
+      const matchIndex = state.config.rules.findIndex((rule) => String(rule).startsWith('MATCH,'));
+      if (matchIndex >= 0) {
+        state.config.rules.splice(matchIndex, 0, ...newRules);
+      } else {
+        state.config.rules.push(...newRules);
+      }
+      updateYamlFromConfig();
+      setStatus(`已加入 ${newRules.length} 条网址规则。`, 'good');
     }
 
     function validateConfig() {
@@ -983,6 +1073,8 @@
     $('pushGist').addEventListener('click', pushGist);
     $('addNodes').addEventListener('click', addNodes);
     $('clearAdd').addEventListener('click', () => { $('vlessInput').value = ''; });
+    $('addRules').addEventListener('click', addRules);
+    $('clearRules').addEventListener('click', () => { $('ruleInput').value = ''; });
     $('removeSelected').addEventListener('click', removeSelected);
     $('parseYaml').addEventListener('click', parseYamlText);
     $('copyYaml').addEventListener('click', () => copyText(dumpConfig(), '配置已复制。'));
